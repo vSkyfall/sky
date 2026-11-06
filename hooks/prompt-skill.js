@@ -9,10 +9,24 @@ if (!prompt || prompt.trim().startsWith("/") || prompt.length > 4000) process.ex
 // Türkçe küçük harf "API" → "apı" yapar; İngilizce terimler de eşleşsin diye iki biçimi birden ara.
 const text = prompt.toLocaleLowerCase("tr-TR") + "\n" + prompt.toLowerCase();
 
-// Kısa terimler (≤ 3 harf) kelime sınırıyla, uzunları ek alabilen alt dizgi olarak eşlenir.
+// Terimler kelime başında eşlenir. Kısa terimler (≤ 3 harf) tam kelime olmalı; uzunlar Türkçe ek
+// alabilir ("formu", "performansı"). EXCEPT, ek değil başka kelime oluşturan devamları dışlar.
 const L = "a-zçğıöşü0-9";
 const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const term = (t) => (t.length <= 3 ? new RegExp(`(?<![${L}])${esc(t)}(?![${L}])`) : new RegExp(esc(t)));
+const EXCEPT = {
+  java: "script",
+  form: "at|al|ül",
+  feed: "back",
+  hero: "ku",
+  "takım": "yıldız",
+  rust: "ic",
+  spring: "board",
+  ruby: "ist",
+};
+const term = (t) =>
+  t.length <= 3
+    ? new RegExp(`(?<![${L}])${esc(t)}(?![${L}])`)
+    : new RegExp(`(?<![${L}])${esc(t)}${EXCEPT[t] ? `(?!${EXCEPT[t]})` : ""}`);
 
 const MAP = [
   [["randevu", "rezervasyon", "müsait saat", "booking"], ["sky-scheduling"]],
@@ -170,7 +184,7 @@ const MAP = [
   [["wasm", "webassembly", "tarayıcıda hızlı", "rust'ı web"], ["sky-wasm"]],
   [["ses", "müzik uygulama", "web audio", "sesli mesaj", "oynatıcı", "tone.js"], ["sky-web-audio"]],
   [["web component", "custom element", "gömülebilir widget", "lit"], ["sky-web-components"]],
-  [["wordpress", "gutenberg", "woocommerce", "eklenti", "tema"], ["sky-wordpress"]],
+  [["wordpress", "gutenberg", "woocommerce", "wp eklenti", "wp tema"], ["sky-wordpress"]],
   [["shopify", "liquid", "hydrogen", "online store"], ["sky-shopify"]],
   [["firebase", "firestore", "convex", "pocketbase", "appwrite", "hazır backend", "baas"], ["sky-baas"]],
   [["c++", "cpp", "cmake", "c kodu", "modern c++"], ["sky-cpp"]],

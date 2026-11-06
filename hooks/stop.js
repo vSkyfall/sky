@@ -1,46 +1,57 @@
 #!/usr/bin/env node
-// Stop: tur bitmeden önce bu turda eklenen satırlarda debug kalıntısı arar; bulursa bir kez
-// Claude'dan temizlemesini veya bilinçli olduğunu belirtmesini ister.
+// Stop: bu turda Claude'un Edit/Write/MultiEdit ile eklediği satırlarda debug kalıntısı arar; bulursa
+// bir kez Claude'dan temizlemesini veya bilinçli olduğunu belirtmesini ister. Turun sınırı oturum
+// kaydındaki (transcript) son kullanıcı mesajıdır; daha önceki veya kullanıcının kendi değişikliklerine bakmaz.
 const fs = require("fs");
 const path = require("path");
-const { execFileSync } = require("child_process");
 const { readInput, disabled, emit } = require("./lib");
 
 if (disabled("stop")) process.exit(0);
 const input = readInput();
-if (input.stop_hook_active) process.exit(0);
+if (input.stop_hook_active || !input.transcript_path) process.exit(0);
 const cwd = input.cwd || process.cwd();
 
-const git = (args) => execFileSync("git", args, { cwd, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).toString();
+let entries;
 try {
-  git(["rev-parse", "--is-inside-work-tree"]);
+  entries = fs.readFileSync(input.transcript_path, "utf8").split("\n");
 } catch {
   process.exit(0);
 }
 
-const WEB = /\.(t|j)sx?$|\.vue$|\.svelte$|\.astro$|\.(py|go|rs|php|rb|dart|kt|swift)$/;
-const added = []; // { file, line, text }
-
-try {
-  let file = null, lineNo = 0;
-  for (const l of git(["diff", "-U0", "HEAD"]).split("\n")) {
-    if (l.startsWith("+++ ")) { file = l.startsWith("+++ b/") ? l.slice(6) : null; continue; }
-    const h = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
-    if (h) { lineNo = parseInt(h[1], 10); continue; }
-    if (file && l.startsWith("+")) { added.push({ file, line: lineNo, text: l.slice(1) }); lineNo++; }
+// Son kullanıcı mesajından sonraki dosya düzenleme çağrılarını topla.
+const isPrompt = (c) =>
+  typeof c === "string" || (Array.isArray(c) && c.some((x) => x.type === "text") && !c.some((x) => x.type === "tool_result"));
+let edits = [];
+for (const line of entries) {
+  let e;
+  try {
+    e = JSON.parse(line);
+  } catch {
+    continue;
   }
-} catch {
-  // Henüz commit yoksa yalnızca izlenmeyen dosyalara bak.
+  if (e.isSidechain || !e.message) continue;
+  const c = e.message.content;
+  if (e.type === "user" && !e.isMeta && isPrompt(c)) edits = [];
+  else if (e.type === "assistant" && Array.isArray(c))
+    for (const x of c) if (x.type === "tool_use" && /^(Edit|Write|MultiEdit)$/.test(x.name) && x.input) edits.push(x.input);
 }
-try {
-  for (const f of git(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean).slice(0, 50)) {
-    if (!WEB.test(f)) continue;
-    try {
-      fs.readFileSync(path.join(cwd, f), "utf8").split("\n").forEach((t, i) => added.push({ file: f, line: i + 1, text: t }));
-    } catch {}
-  }
-} catch {}
+if (!edits.length) process.exit(0);
 
+// Dosya başına eklenen satırlar: yeni metinde olup eski metinde olmayanlar.
+const added = new Map(); // file -> Set(lines)
+for (const inp of edits) {
+  const file = inp.file_path || inp.path;
+  if (!file) continue;
+  const pairs = inp.edits ? inp.edits : [{ old_string: inp.old_string, new_string: inp.new_string ?? inp.content }];
+  const set = added.get(file) || new Set();
+  for (const { old_string = "", new_string = "" } of pairs) {
+    const old = new Set(String(old_string).split("\n"));
+    for (const l of String(new_string).split("\n")) if (!old.has(l)) set.add(l);
+  }
+  added.set(file, set);
+}
+
+const WEB = /\.(t|j)sx?$|\.vue$|\.svelte$|\.astro$|\.(py|go|rs|php|rb|dart|kt|swift)$/;
 const rules = [
   [/\bconsole\.log\(/, "console.log", (f) => !/(scripts?|bin|cli)\/|\.config\.|\.test\.|\.spec\./.test(f)],
   [/^\s*debugger;?\s*$/, "debugger", () => true],
@@ -52,17 +63,32 @@ const rules = [
   [/binding\.(pry|irb)|\bbyebug\b/, "Ruby debugger", (f) => f.endsWith(".rb")],
   [/@pytest\.mark\.skip\b|\bfit\(|\bfdescribe\(/, "atlanan/odaklanmış test", () => true],
 ];
+
 const hits = [];
-for (const a of added) {
-  if (!WEB.test(a.file) || /node_modules|\.next\//.test(a.file)) continue;
-  for (const [re, label, applies] of rules) if (applies(a.file) && re.test(a.text)) hits.push(`${a.file}:${a.line} ${label}`);
+for (const [file, lines] of added) {
+  const rel = path.relative(cwd, file).replace(/\\/g, "/") || file;
+  if (!WEB.test(rel) || /node_modules|\.next\//.test(rel)) continue;
+  let current;
+  try {
+    current = fs.readFileSync(file, "utf8").split("\n");
+  } catch {
+    continue; // dosya silinmiş
+  }
+  for (const [re, label, applies] of rules) {
+    if (!applies(rel)) continue;
+    for (const l of lines) {
+      if (!re.test(l)) continue;
+      const n = current.indexOf(l);
+      if (n >= 0) hits.push(`${rel}:${n + 1} ${label}`); // satır hâlâ dosyadaysa bildir
+    }
+  }
 }
 
 if (hits.length) {
   emit({
     decision: "block",
     reason:
-      `Sky son kontrol — bu değişikliklerde kalıntı olabilecek satırlar var:\n${hits.slice(0, 12).map((h) => "  - " + h).join("\n")}` +
+      `Sky son kontrol — bu turdaki değişikliklerde kalıntı olabilecek satırlar var:\n${hits.slice(0, 12).map((h) => "  - " + h).join("\n")}` +
       (hits.length > 12 ? `\n  (+${hits.length - 12} daha)` : "") +
       `\nBilinçli değilse temizle; bilinçliyse kullanıcıya kısaca belirt ve bitir.`,
   });

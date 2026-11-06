@@ -68,7 +68,7 @@ const map = [
   [["@angular/core"], "Angular", ["sky-angular"]],
   [["astro"], "Astro", ["sky-astro"]],
   [["solid-js"], "Solid", ["sky-web-stack"]],
-  [["@tanstack/react-query", "wagmi", "viem"], "Web3", ["sky-web3"]],
+  [["wagmi", "viem"], "Web3", ["sky-web3"]],
   [["@rainbow-me/rainbowkit", "@web3modal/wagmi", "ethers"], "Web3", ["sky-web3"]],
   [["firebase", "firebase-admin"], "Firebase", ["sky-baas"]],
   [["convex"], "Convex", ["sky-baas"]],
@@ -85,7 +85,8 @@ const skills = new Set();
 for (const [names, label, sk] of map) {
   if (names.some((n) => n in deps)) {
     const v = names.map((n) => deps[n]).find(Boolean);
-    stack.push(label === "Next.js" && v ? `Next.js ${String(v).replace(/^[\^~]/, "")}` : label);
+    const shown = label === "Next.js" && v ? `Next.js ${String(v).replace(/^[\^~]/, "")}` : label;
+    if (!stack.includes(shown)) stack.push(shown);
     sk.forEach((s) => skills.add(s));
   }
 }

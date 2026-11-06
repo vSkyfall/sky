@@ -19,8 +19,8 @@ if (!cmd || process.env.SKY_HOOKS === "off") process.exit(0);
 const reasons = [];
 
 if (!disabled("danger")) {
+  if (dangerousRm(cmd)) reasons.push("geniş kapsamlı `rm -rf`");
   const rules = [
-    [/\brm\s+-[a-zA-Z]*(rf|fr)[a-zA-Z]*\s+(\/|~|\*|\$HOME|\.\s*$|\.\/?\s)/, "geniş kapsamlı `rm -rf`"],
     [/\bgit\s+push\b[^|;&]*\s(--force|-f)(\s|$)/, "`git push --force` (uzak geçmişi ezer)"],
     [/\bgit\s+reset\s+--hard\b/, "`git reset --hard` (kaydedilmemiş değişiklikler kaybolur)"],
     [/\bgit\s+clean\s+-[a-zA-Z]*f/, "`git clean -f` (izlenmeyen dosyalar silinir)"],
@@ -57,6 +57,27 @@ if (reasons.length) {
   ask(`Sky güvenlik kontrolü: ${reasons.join("; ")}. Devam etmeden önce kullanıcı onayı gerekiyor.`);
 }
 process.exit(0);
+
+// Özyinelemeli rm'in hedefi kök, ev dizini, tek seviyeli sistem dizini (/etc, /home), joker
+// veya çalışma dizininin tamamı mı? Bayrak sırası ve uzun biçimler (-r -f, --recursive) da tanınır.
+function dangerousRm(command) {
+  const WIDE = /^(\/\*?|\/[^/\s]+\/?\*?|~\/?\*?|\$\{?HOME\}?\/?\*?|\*|\.\/?\*?|\.\.\/?\*?)$/;
+  for (const seg of command.split(/[;&|\n]+|\$\(|`/)) {
+    const t = seg.trim().split(/\s+/);
+    const i = t.findIndex((x) => x === "rm" || /\/rm$/.test(x));
+    if (i < 0) continue;
+    let recursive = false, endOfFlags = false;
+    const targets = [];
+    for (const a of t.slice(i + 1)) {
+      if (!endOfFlags && a === "--") { endOfFlags = true; continue; }
+      if (!endOfFlags && a === "--recursive") recursive = true;
+      else if (!endOfFlags && /^-[a-zA-Z]+$/.test(a)) { if (/[rR]/.test(a)) recursive = true; }
+      else if (endOfFlags || !a.startsWith("--")) targets.push(a.replace(/^["']|["']$/g, ""));
+    }
+    if (recursive && targets.some((x) => WIDE.test(x))) return true;
+  }
+  return false;
+}
 
 function checkPackage(name) {
   const similar = POPULAR.find((p) => p !== name && Math.abs(p.length - name.length) <= 2 && distance(p, name) === 1);
